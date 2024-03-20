@@ -50,15 +50,74 @@ async function isValidAndroidId(androidId) {
 
     for (let i = 0; i < androidId.length; i++) {
         const charCode = androidId.charCodeAt(i);
-        if (!((charCode >= 48 && charCode <= 57) || // 0-9
-            (charCode >= 65 && charCode <= 70) || // A-F
-            (charCode >= 97 && charCode <= 102))) { // a-f
+        if (!((charCode >= 48 && charCode <= 57) ||
+              (charCode >= 65 && charCode <= 70) ||
+              (charCode >= 97 && charCode <= 102))) {
             return false;
         }
     }
 
     return true;
 }
+
+app.get('/add', async (req, res) => {
+    const androidId = req.query.id;
+
+    if (!androidId) {
+        return res.status(400).json({ error: 'Android ID is required.' });
+    }
+
+    try {
+        const isValidId = isValidAndroidId(androidId);
+        if (!isValidId) {
+            return res.status(403).json({ error: 'Invalid Android ID.' });
+        }
+
+        let user = await User.findOne({ username: androidId });
+
+        const expirationDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        if (!user) {
+            user = await User.create({ username: androidId, lastRequestTimestamp: Date.now(), requestsMade: 0, userType: 'PAID', premiumExpiration: expirationDate });
+        } else {
+            user.userType = 'PAID';
+            user.premiumExpiration = expirationDate;
+            await user.save();
+        }
+
+        res.json({ code: 200, message: 'Account upgraded to premium successfully.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
+});
+
+app.get('/check/:androidId', async (req, res) => {
+    try {
+        const androidId = req.params.androidId;
+
+
+        const isValidId = isValidAndroidId(androidId);
+        if (!isValidId) {
+            return res.status(400).json({ error: 'Invalid Android ID.' });
+        }
+
+
+        const user = await User.findOne({ username: androidId });
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+
+        const userType = user.userType === 'PAID' ? 'PAID' : 'FREE';
+        res.json({ msg: userType });
+    } catch (error) {
+        console.error("Error retrieving user data:", error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
+});
+
 
 app.get('/prompt', async (req, res) => {
     const prompt = req.query.prompt;
@@ -103,44 +162,13 @@ app.get('/prompt', async (req, res) => {
 
         const imageUrl = await getProLLMResponse(prompt);
         if (imageUrl.error) {
+            console.error("Error generating LLM response:", imageUrl.error);
             return res.status(500).json({ error: imageUrl.error });
         }
 
         res.json({ code: 200, url: imageUrl });
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Internal server error. Please try again later.' });
-    }
-});
-
-app.get('/add', async (req, res) => {
-    const androidId = req.query.id;
-
-    if (!androidId) {
-        return res.status(400).json({ error: 'Android ID is required.' });
-    }
-
-    try {
-        const isValidId = isValidAndroidId(androidId);
-        if (!isValidId) {
-            return res.status(403).json({ error: 'Invalid Android ID.' });
-        }
-
-        let user = await User.findOne({ username: androidId });
-
-        const expirationDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-        if (!user) {
-            user = await User.create({ username: androidId, lastRequestTimestamp: Date.now(), requestsMade: 0, userType: 'PAID', premiumExpiration: expirationDate });
-        } else {
-            user.userType = 'PAID';
-            user.premiumExpiration = expirationDate;
-            await user.save();
-        }
-
-        res.json({ code: 200, message: 'Account upgraded to premium successfully.' });
-    } catch (error) {
-        console.error(error);
+        console.error("Internal server error:", error);
         res.status(500).json({ error: 'Internal server error. Please try again later.' });
     }
 });
@@ -181,40 +209,50 @@ async function getProLLMResponse(prompt) {
             body: JSON.stringify(data)
         });
 
+        if (!response.ok) {
+            console.error("Failed to generate LLM response. HTTP status:", response.status);
+            return { error: 'Failed to generate LLM response. Please try again later.' };
+        }
+
         const json = await response.json();
-        const imageUrl = `https://storage.googleapis.com/pai-images/${json.images[0].imageKey}.jpeg`;
 
-        const imageResponse = await fetch(imageUrl);
-        const buffer = await imageResponse.buffer();
+        if (!json.images || !json.images[0] || !json.images[0].imageKey) {
+            console.error("Failed to parse LLM response:", json);
+            return { error: 'Failed to parse LLM response. Please try again later.' };
+        }
 
-        const bucket = storage.bucket();
-        const firebaseFileName = `images/${Date.now()}.jpeg`;
-        const file = bucket.file(firebaseFileName);
+        const imageUrl = `https://images.playground.com/${json.images[0].imageKey}.jpeg`;
 
-        await new Promise((resolve, reject) => {
-            const stream = file.createWriteStream({
-                metadata: {
-                    contentType: 'image/jpeg'
-                }
-            });
-
-            stream.on('error', (error) => {
-                reject(error);
-            });
-            stream.on('finish', () => {
-                resolve();
-            });
-
-            stream.end(buffer);
-        });
-
-        const firebaseImageUrl = `https://storage.googleapis.com/${firebaseConfig.storageBucket}/${firebaseFileName}`;
-
-        return firebaseImageUrl;
+        return imageUrl;
     } catch (error) {
+        console.error("Error generating LLM response:", error);
         return { error: 'Internal server error. Please try again later.' };
     }
 }
+/*
+async function sendDeployHookRequest() {
+    try {
+        const deployKey = process.env.DEPLOY_KEY;
+        const response = await fetch(`https://api.render.com/deploy/srv-cnjggcuct0pc73cb0atg?key=${deployKey}`, { method: 'POST' });
+        if (!response.ok) {
+            console.error('Failed to send deploy hook request');
+        } else {
+            console.log('Deploy hook request sent successfully');
+        }
+    } catch (error) {
+        console.error('Error sending deploy hook request:', error);
+    }
+}
+
+function scheduleTasks() {
+    sendDeployHookRequest();
+
+    setTimeout(scheduleTasks, 5 * 60 * 1000);
+}
+
+scheduleTasks();
+*/
+
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
