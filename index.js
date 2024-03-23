@@ -96,19 +96,16 @@ app.get('/check/:androidId', async (req, res) => {
     try {
         const androidId = req.params.androidId;
 
-
         const isValidId = isValidAndroidId(androidId);
         if (!isValidId) {
             return res.status(400).json({ error: 'Invalid Android ID.' });
         }
-
 
         const user = await User.findOne({ username: androidId });
 
         if (!user) {
             return res.status(404).json({ error: 'User not found.' });
         }
-
 
         const userType = user.userType === 'PAID' ? 'PAID' : 'FREE';
         res.json({ msg: userType });
@@ -158,7 +155,7 @@ app.get('/prompt', async (req, res) => {
 
         user.requestsMade++;
         user.lastRequestTimestamp = now;
-        await user.save();
+              await user.save();
 
         const imageUrl = await getProLLMResponse(prompt);
         if (imageUrl.error) {
@@ -229,30 +226,6 @@ async function getProLLMResponse(prompt) {
         return { error: 'Internal server error. Please try again later.' };
     }
 }
-/*
-async function sendDeployHookRequest() {
-    try {
-        const deployKey = process.env.DEPLOY_KEY;
-        const response = await fetch(`https://api.render.com/deploy/srv-cnjggcuct0pc73cb0atg?key=${deployKey}`, { method: 'POST' });
-        if (!response.ok) {
-            console.error('Failed to send deploy hook request');
-        } else {
-            console.log('Deploy hook request sent successfully');
-        }
-    } catch (error) {
-        console.error('Error sending deploy hook request:', error);
-    }
-}
-
-function scheduleTasks() {
-    sendDeployHookRequest();
-
-    setTimeout(scheduleTasks, 5 * 60 * 1000);
-}
-
-scheduleTasks();
-*/
-
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => {
