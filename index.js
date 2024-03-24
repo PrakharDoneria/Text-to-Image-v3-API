@@ -115,6 +115,61 @@ app.get('/check/:androidId', async (req, res) => {
     }
 });
 
+app.get('/info/:androidId', async (req, res) => {
+    try {
+        const androidId = req.params.androidId;
+
+        // Validate Android ID format
+        if (!isValidAndroidId(androidId)) {
+            return res.status(400).json({ error: 'Invalid Android ID format.' });
+        }
+
+        // Find the user in the database
+        const user = await User.findOne({ username: androidId });
+
+        // If user not found, return error
+        if (!user) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        // Return user details
+        res.json({
+            username: user.username,
+            lastRequestTimestamp: user.lastRequestTimestamp,
+            requestsMade: user.requestsMade,
+            userType: user.userType,
+            premiumExpiration: user.premiumExpiration
+        });
+    } catch (error) {
+        console.error("Error retrieving user data:", error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
+});
+
+app.get('/ban/:androidId', async (req, res) => {
+    try {
+        const androidId = req.params.androidId;
+
+        const isValidId = isValidAndroidId(androidId);
+        if (!isValidId) {
+            return res.status(400).json({ error: 'Invalid Android ID.' });
+        }
+
+        let user = await User.findOne({ username: androidId });
+
+        if (!user) {
+            return res.status(404).json({ error: 'User not found.' });
+        }
+
+        user.userType = 'BANNED';
+        await user.save();
+
+        res.json({ message: 'User banned successfully.' });
+    } catch (error) {
+        console.error("Error banning user:", error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
+});
 
 app.get('/prompt', async (req, res) => {
     const prompt = req.query.prompt;
@@ -131,31 +186,26 @@ app.get('/prompt', async (req, res) => {
             return res.status(403).json({ error: 'Invalid Android ID.' });
         }
 
-        const response = await fetch(`http://ip-api.com/json/${ipAddress}`);
-        const ipInfo = await response.json();
+        const user = await User.findOne({ username: androidId });
 
-        if (!ipInfo || ipInfo.proxy || ipInfo.vpn) {
-            return res.status(403).json({ error: 'Invalid or VPN IP address.' });
+        if (!user || user.userType === 'BANNED') {
+            return res.status(403).json({ error: 'User is banned. Upgrade to pro to access the service.' });
         }
 
-        let user = await User.findOne({ username: androidId });
+        if (user.userType === 'FREE' && user.requestsMade >= 3) {
+            return res.status(403).json({ error: 'Daily limit exceeded for free users. Upgrade to pro for unlimited access.' });
+        }
+
         const now = Date.now();
 
-        if (!user || (user.lastRequestTimestamp && (now - user.lastRequestTimestamp) >= 24 * 60 * 60 * 1000)) {
-            user = await User.findOneAndUpdate(
-                { username: androidId },
-                { lastRequestTimestamp: now, requestsMade: 0, userType: 'free', premiumExpiration: null },
-                { upsert: true, new: true }
-            );
-        }
-
-        if (user.userType === 'free' && user.requestsMade >= 3) {
-            return res.status(403).json({ error: 'Daily limit exceeded for free users. Upgrade to pro for unlimited access.' });
+        // Reset requests made if it's a new day
+        if (user.lastRequestTimestamp && !isSameDay(now, user.lastRequestTimestamp)) {
+            user.requestsMade = 0;
         }
 
         user.requestsMade++;
         user.lastRequestTimestamp = now;
-              await user.save();
+        await user.save();
 
         const imageUrl = await getProLLMResponse(prompt);
         if (imageUrl.error) {
@@ -164,7 +214,8 @@ app.get('/prompt', async (req, res) => {
         }
 
         res.json({ code: 200, url: imageUrl });
-    } catch (error) {
+    } catch (error)
+      {
         console.error("Internal server error:", error);
         res.status(500).json({ error: 'Internal server error. Please try again later.' });
     }
@@ -231,3 +282,11 @@ const port = process.env.PORT || 3000;
 app.listen(port, () => {
     console.log(`Server is running on port ${port}`);
 });
+
+function isSameDay(date1, date2) {
+    const d1 = new Date(date1);
+    const d2 = new Date(date2);
+    return d1.getFullYear() === d2.getFullYear() &&
+        d1.getMonth() === d2.getMonth() &&
+        d1.getDate() === d2.getDate();
+}
