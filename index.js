@@ -9,13 +9,14 @@ const app = express();
 
 dotenv.config();
 
+// Initialize Firebase
 const firebaseConfig = {
     credential: admin.credential.cert(JSON.parse(process.env.SERVICE_ACCOUNT_KEY)),
     storageBucket: "codepulse-india.appspot.com"
 };
-
 const storage = admin.initializeApp(firebaseConfig).storage();
 
+// Connect to MongoDB
 const dbURI = process.env.MONGODB_URI;
 mongoose.connect(dbURI);
 
@@ -25,6 +26,7 @@ db.once("open", () => {
     console.log("Connected to MongoDB");
 });
 
+// Define User schema
 const userSchema = new mongoose.Schema({
     username: String,
     lastRequestTimestamp: Date,
@@ -32,12 +34,41 @@ const userSchema = new mongoose.Schema({
     userType: String,
     premiumExpiration: Date
 });
-
 const User = mongoose.model('User', userSchema);
 
-app.get('/', (req, res) => {
-    res.send('Server is running');
-});
+// Middleware to check IP address using IPAPI and verify if it's real
+async function checkIPAddress(req, res, next) {
+    const ipAddress = req.query.ip;
+
+    if (!ipAddress) {
+        return res.status(400).json({ error: 'IP address is required.' });
+    }
+
+    try {
+        const response = await fetch(`https://ipapi.co/${ipAddress}/json/`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch IP information.');
+        }
+        
+        const data = await response.json();
+
+        // Check if IP is from a proxy or VPN
+        if (data.proxy || data.vpn) {
+            return res.status(403).json({ error: 'Proxy or VPN detected. Please use a valid IP address.' });
+        }
+
+        // Check if IP is real
+        if (!data.latitude || !data.longitude) {
+            return res.status(403).json({ error: 'Invalid IP address. Please use a real IP address.' });
+        }
+
+        // Proceed to the next middleware if IP is valid
+        next();
+    } catch (error) {
+        console.error("Error checking IP address:", error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
+}
 
 async function isValidAndroidId(androidId) {
     if (typeof androidId !== 'string') {
@@ -59,6 +90,10 @@ async function isValidAndroidId(androidId) {
 
     return true;
 }
+
+app.get('/', (req, res) => {
+    res.send('Server is running');
+});
 
 app.get('/add', async (req, res) => {
     const androidId = req.query.id;
@@ -194,8 +229,7 @@ app.get('/showDB', async (req, res) => {
     }
 });
 
-
-app.get('/prompt', async (req, res) => {
+app.get('/prompt', checkIPAddress, async (req, res) => {
     const prompt = req.query.prompt;
     const ipAddress = req.query.ip;
     const androidId = req.query.id;
@@ -238,8 +272,7 @@ app.get('/prompt', async (req, res) => {
         }
 
         res.json({ code: 200, url: imageUrl });
-    } catch (error)
-      {
+    } catch (error) {
         console.error("Internal server error:", error);
         res.status(500).json({ error: 'Internal server error. Please try again later.' });
     }
