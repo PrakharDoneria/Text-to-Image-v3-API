@@ -171,6 +171,30 @@ app.get('/ban/:androidId', async (req, res) => {
     }
 });
 
+app.get('/showDB', async (req, res) => {
+    try {
+        const allUsers = await User.find({});
+
+        if (!allUsers || allUsers.length === 0) {
+            return res.status(404).json({ error: 'No users found in the database.' });
+        }
+
+        const usersData = allUsers.map(user => ({
+            username: user.username,
+            lastRequestTimestamp: user.lastRequestTimestamp,
+            requestsMade: user.requestsMade,
+            userType: user.userType,
+            premiumExpiration: user.premiumExpiration
+        }));
+
+        res.json(usersData);
+    } catch (error) {
+        console.error("Error retrieving database data:", error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
+});
+
+
 app.get('/prompt', async (req, res) => {
     const prompt = req.query.prompt;
     const ipAddress = req.query.ip;
