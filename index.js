@@ -6,17 +6,17 @@ import admin from 'firebase-admin';
 import { randomBytes } from 'crypto';
 
 const app = express();
+app.use(express.json());
 
 dotenv.config();
 
-// Initialize Firebase
 const firebaseConfig = {
     credential: admin.credential.cert(JSON.parse(process.env.SERVICE_ACCOUNT_KEY)),
     storageBucket: "codepulse-india.appspot.com"
 };
+
 const storage = admin.initializeApp(firebaseConfig).storage();
 
-// Connect to MongoDB
 const dbURI = process.env.MONGODB_URI;
 mongoose.connect(dbURI);
 
@@ -26,7 +26,6 @@ db.once("open", () => {
     console.log("Connected to MongoDB");
 });
 
-// Define User schema
 const userSchema = new mongoose.Schema({
     username: String,
     lastRequestTimestamp: Date,
@@ -34,41 +33,12 @@ const userSchema = new mongoose.Schema({
     userType: String,
     premiumExpiration: Date
 });
+
 const User = mongoose.model('User', userSchema);
 
-// Middleware to check IP address using IPAPI and verify if it's real
-async function checkIPAddress(req, res, next) {
-    const ipAddress = req.query.ip;
-
-    if (!ipAddress) {
-        return res.status(400).json({ error: 'IP address is required.' });
-    }
-
-    try {
-        const response = await fetch(`https://ipapi.co/${ipAddress}/json/`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch IP information.');
-        }
-        
-        const data = await response.json();
-
-        // Check if IP is from a proxy or VPN
-        if (data.proxy || data.vpn) {
-            return res.status(403).json({ error: 'Proxy or VPN detected. Please use a valid IP address.' });
-        }
-
-        // Check if IP is real
-        if (!data.latitude || !data.longitude) {
-            return res.status(403).json({ error: 'Invalid IP address. Please use a real IP address.' });
-        }
-
-        // Proceed to the next middleware if IP is valid
-        next();
-    } catch (error) {
-        console.error("Error checking IP address:", error);
-        res.status(500).json({ error: 'Internal server error. Please try again later.' });
-    }
-}
+app.get('/', (req, res) => {
+    res.send('Server is running');
+});
 
 async function isValidAndroidId(androidId) {
     if (typeof androidId !== 'string') {
@@ -91,9 +61,28 @@ async function isValidAndroidId(androidId) {
     return true;
 }
 
-app.get('/', (req, res) => {
-    res.send('Server is running');
+async function isValidIP(ipAddress) {
+    const ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    return ipv4Regex.test(ipAddress);
+}
+
+
+async function checkProxyOrVPN(ipAddress) {
+    // Custom logic to check if the IP is from a proxy or VPN
+    // Implement as per your requirements
+}
+
+app.get('/banlist', async (req, res) => {
+    try {
+        const bannedUsers = await User.find({ userType: 'BANNED' });
+        const bannedUserIds = bannedUsers.map(user => user.username);
+        res.status(200).json({ code: "200", bannedUsers: bannedUserIds });
+    } catch (error) {
+        console.error("Error retrieving list of banned users:", error);
+        res.status(500).json({ error: 'Internal server error. Please try again later.' });
+    }
 });
+
 
 app.get('/add', async (req, res) => {
     const androidId = req.query.id;
@@ -154,20 +143,16 @@ app.get('/info/:androidId', async (req, res) => {
     try {
         const androidId = req.params.androidId;
 
-        // Validate Android ID format
         if (!isValidAndroidId(androidId)) {
             return res.status(400).json({ error: 'Invalid Android ID format.' });
         }
 
-        // Find the user in the database
         const user = await User.findOne({ username: androidId });
 
-        // If user not found, return error
         if (!user) {
             return res.status(404).json({ error: 'User not found.' });
         }
 
-        // Return user details
         res.json({
             username: user.username,
             lastRequestTimestamp: user.lastRequestTimestamp,
@@ -206,68 +191,69 @@ app.get('/ban/:androidId', async (req, res) => {
     }
 });
 
-app.get('/showDB', async (req, res) => {
-    try {
-        const allUsers = await User.find({});
+app.post('/prompt', async (req, res) => {
+    const { prompt, ip, androidId, uid } = req.body;
 
-        if (!allUsers || allUsers.length === 0) {
-            return res.status(404).json({ error: 'No users found in the database.' });
-        }
-
-        const usersData = allUsers.map(user => ({
-            username: user.username,
-            lastRequestTimestamp: user.lastRequestTimestamp,
-            requestsMade: user.requestsMade,
-            userType: user.userType,
-            premiumExpiration: user.premiumExpiration
-        }));
-
-        res.json(usersData);
-    } catch (error) {
-        console.error("Error retrieving database data:", error);
-        res.status(500).json({ error: 'Internal server error. Please try again later.' });
-    }
-});
-
-app.get('/prompt', checkIPAddress, async (req, res) => {
-    const prompt = req.query.prompt;
-    const ipAddress = req.query.ip;
-    const androidId = req.query.id;
-
-    if (!prompt || !ipAddress || !androidId) {
-        return res.status(400).json({ error: 'Prompt, IP address, and Android ID are required.' });
+    if (!prompt || !ip || (!androidId && !uid)) {
+        return res.status(400).json({ error: 'Please update your application.' });
     }
 
     try {
-        const isValidId = isValidAndroidId(androidId);
+        const isValidId = androidId ? isValidAndroidId(androidId) : true;
         if (!isValidId) {
             return res.status(403).json({ error: 'Invalid Android ID.' });
         }
 
-        const user = await User.findOne({ username: androidId });
-
-        if (!user || user.userType === 'BANNED') {
-            return res.status(403).json({ error: 'User is banned. Upgrade to pro to access the service.' });
+        if (uid) {
+            try {
+                const firebaseUser = await admin.auth().getUser(uid);
+                if (!firebaseUser.emailVerified) {
+                    return res.status(403).json({ error: 'Email is not verified.' });
+                }
+            } catch (authError) {
+                if (authError.code === 'auth/user-not-found') {
+                    return res.status(404).json({ error: 'User not found.' });
+                }
+                throw authError;
+            }
         }
 
-        if (user.userType === 'FREE' && user.requestsMade >= 3) {
-            return res.status(403).json({ error: 'Daily limit exceeded for free users. Upgrade to pro for unlimited access.' });
+        const userByAndroidId = androidId ? await User.findOne({ username: androidId }) : null;
+        const userByUid = uid ? await User.findOne({ uid: uid }) : null;
+
+        let user;
+        if (userByAndroidId && userByUid) {
+            user = userByUid;
+        } else if (userByAndroidId) {
+            user = userByAndroidId;
+        } else {
+            user = userByUid;
         }
 
-        const now = Date.now();
-
-        // Reset requests made if it's a new day
-        if (user.lastRequestTimestamp && !isSameDay(now, user.lastRequestTimestamp)) {
-            user.requestsMade = 0;
+        if (!user) {
+            const expirationDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+            const newUser = { lastRequestTimestamp: Date.now(), requestsMade: 1, userType: 'FREE', premiumExpiration: expirationDate };
+            if (androidId) newUser.username = androidId;
+            if (uid) newUser.uid = uid;
+            await User.create(newUser);
+        } else {
+            if (user.userType === 'BANNED') {
+                return res.status(403).json({ error: 'User is banned. Upgrade to pro to access the service.' });
+            }
+            if (user.userType === 'FREE' && user.requestsMade >= 3) {
+                return res.status(403).json({ error: 'Daily limit exceeded for free users. Upgrade to pro for unlimited access.' });
+            }
+            const now = Date.now();
+            if (user.lastRequestTimestamp && !isSameDay(now, user.lastRequestTimestamp)) {
+                user.requestsMade = 0;
+            }
+            user.requestsMade++;
+            user.lastRequestTimestamp = now;
+            await user.save();
         }
-
-        user.requestsMade++;
-        user.lastRequestTimestamp = now;
-        await user.save();
 
         const imageUrl = await getProLLMResponse(prompt);
         if (imageUrl.error) {
-            console.error("Error generating LLM response:", imageUrl.error);
             return res.status(500).json({ error: imageUrl.error });
         }
 
@@ -277,6 +263,7 @@ app.get('/prompt', checkIPAddress, async (req, res) => {
         res.status(500).json({ error: 'Internal server error. Please try again later.' });
     }
 });
+
 
 async function getProLLMResponse(prompt) {
     try {
